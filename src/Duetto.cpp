@@ -25,6 +25,15 @@ struct Duetto : Module {
     NUM_OUTPUTS
   };
   enum LightIds {
+    ENUMS(STEP_LIGHT, 8),
+    // LIGHT03_LIGHT,
+    // LIGHT04_LIGHT,
+    // LIGHT02_LIGHT,
+    // LIGHT05_LIGHT,
+    // LIGHT01_LIGHT,
+    // LIGHT06_LIGHT,
+    // LIGHT00_LIGHT,
+    // LIGHT07_LIGHT,
     NUM_LIGHTS
   };
 
@@ -76,10 +85,13 @@ struct Duetto : Module {
 
     metroPhase += clockTime * args.sampleTime;
     if (metroPhase >= 1.f) {
+      // Turn current light off:
+      lights[STEP_LIGHT+step].value = 0;
       step++;
       metroPhase-=1.f;
       if (step>=NSTEPS)
         step=0;
+      lights[STEP_LIGHT+step].value = 1.f;
     }
     
     for (int t=0;t<NNOTES;t++ ) {
@@ -127,20 +139,31 @@ struct DuettoWidget : ModuleWidget {
     addChild(createWidget<ScrewSilver>(Vec(RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
     addChild(createWidget<ScrewSilver>(Vec(box.size.x - 2 * RACK_GRID_WIDTH, RACK_GRID_HEIGHT - RACK_GRID_WIDTH)));
 
-    addParam(createParamCentered<CKD6>(mm2px(Vec(13.215, 96.125)), module, Duetto::NOTE00_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(32.121, 96.125)), module, Duetto::NOTE01_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(51.028, 96.125)), module, Duetto::NOTE02_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(69.934, 96.125)), module, Duetto::NOTE03_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(88.841, 96.125)), module, Duetto::NOTE04_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(13.215,  99.829)), module, Duetto::NOTE00_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(26.830,  99.829)), module, Duetto::NOTE01_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(40.444,  99.829)), module, Duetto::NOTE02_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(54.059,  99.829)), module, Duetto::NOTE03_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(67.674,  99.829)), module, Duetto::NOTE04_PARAM));
     addParam(createParamCentered<CKD6>(mm2px(Vec(13.215, 112.498)), module, Duetto::NOTE05_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(32.121, 112.498)), module, Duetto::NOTE06_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(51.028, 112.498)), module, Duetto::NOTE07_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(69.934, 112.498)), module, Duetto::NOTE08_PARAM));
-    addParam(createParamCentered<CKD6>(mm2px(Vec(88.841, 112.498)), module, Duetto::NOTE09_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(26.830, 112.498)), module, Duetto::NOTE06_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(40.444, 112.498)), module, Duetto::NOTE07_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(54.059, 112.498)), module, Duetto::NOTE08_PARAM));
+    addParam(createParamCentered<CKD6>(mm2px(Vec(67.674, 112.498)), module, Duetto::NOTE09_PARAM));
 
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(88.257, 58.196)), module, Duetto::OUT1_OUTPUT));
+
+    // Color changing? First just show the tempo
+    float centerX=37,centerY=68, rad=15;
+    for ( int step=0;step<NSTEPS;step++) {
+      float theta=step*2*M_PI/NSTEPS;
+      float x=centerX + rad*std::cos(theta);
+      float y=centerY + rad*std::sin(theta);
+      addChild(createLightCentered<MediumLight<RedLight>>(mm2px(Vec(x,y)), module, Duetto::STEP_LIGHT+step));
+    }
   }
 };
 
 
 Model* modelDuetto = createModel<Duetto, DuettoWidget>("Duetto");
+
+
