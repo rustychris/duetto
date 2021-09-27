@@ -1,0 +1,25 @@
+{
+  "slug": "Duetto",
+  "name": "Duetto",
+  "version": "1.0.0",
+  "license": "Apache-2.0",
+  "brand": "Duetto",
+  "author": "Rusty Holleman",
+  "authorEmail": "rustychris@gmail.com",
+  "authorUrl": "",
+  "pluginUrl": "",
+  "manualUrl": "",
+  "sourceUrl": "",
+  "donateUrl": "",
+  "changelogUrl": "",
+  "modules": [
+    {
+      "slug": "Duetto",
+      "name": "Duetto",
+      "description": "Self-contained toy synth",
+      "tags": [
+        "Multiple"
+      ]
+    }
+  ]
+}
