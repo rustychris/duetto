@@ -22,12 +22,22 @@ struct SlidePot : app::SvgSlider {
 };
 
 
+template <typename T>
+static T clip(T x) {
+	// return std::tanh(x);
+	// Pade approximant of tanh
+	x = simd::clamp(x, -3.f, 3.f);
+	return x * (27 + x * x) / (27 + 9 * x * x);
+}
+
 
 struct Duetto : Module {
   enum ParamIds {
     ENUMS(NOTE_PARAM,NNOTES),
     ENUMS(STEP_PARAM, NSTEPS),
     TEMPO_PARAM,
+    FILTERCUT_PARAM,
+    RESONANCE_PARAM,
     NUM_PARAMS
   };
   enum InputIds {
@@ -58,10 +68,14 @@ struct Duetto : Module {
   float pitches[NSTEPS];
   int step;
 
-  float pitch;
+  float pitch; // current pitch
   float env; // envelope
   float attack=0.1,decay=0.50;
   float attacking;
+
+  float state[4]; // lowpass filter state
+  float resonance;
+  float last_osc;
   
   float stepColor[NSTEPS][NCOLORS];
   float noteColor[NNOTES+1][NCOLORS]={ {1.0, 0.0, 0.0},
@@ -89,8 +103,11 @@ struct Duetto : Module {
     // Tempo in BPM is 100*voltage.
     // for labeling, think of BPM as quarter notes, and the
     // sequence plays eighths. 
-    configParam(TEMPO_PARAM, 0.f, 6.0f, 2.40f, "Tempo","bpm",
-                0.f,50.0);
+    configParam(TEMPO_PARAM, 0.f, 6.0f, 2.40f, "Tempo","bpm",0.f,50.0);
+    
+    // Filter cut. 1V/oct
+    configParam(FILTERCUT_PARAM, -1.f, 6.0f, 0.00f, "Filter cut","Hz",2.f,dsp::FREQ_C4);
+    configParam(RESONANCE_PARAM, 0.f, 1.0f, 0.00f, "Resonance","%",0.f,100);
     
     for(int i=0;i<NSTEPS;i++) {
       setStepNote(i,NNOTES,0.5); // no note, inactive
@@ -104,11 +121,23 @@ struct Duetto : Module {
     // pitch itself should always be valid,
     // and let env track whether there is a note
     pitch=0.f;
+
+    // Filter things
+    for(int s=0;s<4;s++) 
+      state[s]=0.0; // lowpass filter state
+    resonance=0;
+    last_osc=0.0;
   }
 
   void setStepNote(int step,int note,float bright) {
-    // step: 0 to NSTEPS-1
-    // note: -1 to leave as is, 0 to NNOTES-1 to set note, NNOTES for no note
+    // Set a sequence step's note, (setting pitch and
+    // the LED color), and update its LED.
+    // step: which sequence step to update
+    //    0..NSTEPS-1
+    // note: the note to set. -1 leaves the note as is
+    //   0 to NNOTES-1 to set note, NNOTES for no note
+    // bright: the brightness for the LED. if negative,
+    //   do not update LED.
     if ( note>=0 ) {
       pitches[step]=noteValues[note];
       stepColor[step][0]=noteColor[note][0];
@@ -127,18 +156,15 @@ struct Duetto : Module {
     }
   }
 
-  void process(const ProcessArgs &args) override {
-    // Clock
-    float tempo=params[TEMPO_PARAM].getValue();
-    // float clockTime = std::pow(2.f, tempo); // tempo in Hz
-    float clockTime = 100.f/60.f * tempo;
-    
+  void checkTriggers() {
     for (int t=0;t<NNOTES;t++ ) {
       if (noteTriggers[t].process(params[NOTE_PARAM+t].getValue() > 0.f)) {
+        // this is sensitive to the UI latency. may want to offset
+        // which step is updated to make it feel more in sync
         setStepNote(step,t,1.0);
         // force an attack
         attacking=1;
-        pitch=pitches[t];
+        pitch=pitches[step];
       }
     }
 
@@ -147,8 +173,12 @@ struct Duetto : Module {
         setStepNote(s,NNOTES,0.5); // default to inactive
       }
     }
-    
-    metroPhase += clockTime * args.sampleTime;
+  }
+
+  void updateMetro(const ProcessArgs &args) {
+    float tempo_Hz=100.f/60.f * params[TEMPO_PARAM].getValue(); // could make it log-scale
+
+    metroPhase += tempo_Hz * args.sampleTime;
     if (metroPhase >= 1.f) {
       // Turn current light off:
       setStepNote(step,-1,0.5);
@@ -165,16 +195,13 @@ struct Duetto : Module {
         pitch=pitches[step];
       }
     }
-        
-    // Compute the frequency from the pitch parameter and input
-    // = pitches[step];
-
+  }
+  
+  float processOscillator(const ProcessArgs &args) {
+    // Accumulate the phase
+    float freq = dsp::FREQ_C4 * std::pow(2.f, pitch);
     float out;
     
-    // The default pitch is C4 = 261.6256f
-    float freq = dsp::FREQ_C4 * std::pow(2.f, pitch);
-      
-    // Accumulate the phase
     phase += freq * args.sampleTime;
     if (phase >= 1.0f)
       phase -= 1.f;
@@ -203,8 +230,10 @@ struct Duetto : Module {
       out = 2 * x - 1; // scale to [-1,1]
       out += sawMinBlep.process();
     }
+    return out;
+  }  
 
-    // envelope:
+  float processEnvelope(const ProcessArgs &args) {
     // attack = simd::clamp(attack, 0.f, 1.f);
     // decay = simd::clamp(decay, 0.f, 1.f);
     float attackLambda = std::pow(LAMBDA_BASE, -attack) / MIN_TIME;
@@ -219,17 +248,56 @@ struct Duetto : Module {
       lambda=attackLambda;
     }
     
-    // Adjust env -- so lambda is the e-folding time frequency?
+    // Adjust env -- lambda is the e-folding time frequency?
     env += (target - env) * lambda * args.sampleTime;
 
     // Turn off attacking state if envelope is HIGH
     if ( env>=1.f ) {
       attacking=0.f;
     }
+    return env;
+  }
 
-    // ADSR had this, not sure why
-    // Turn on attacking state if gate is LOW
-    // attacking[c / 4] = simd::ifelse(gate[c / 4], attacking[c / 4], float_4::mask());
+  float processFilter(const ProcessArgs &args, float osc) {
+    float cutoff_pitch=params[FILTERCUT_PARAM].getValue(); 
+    float resParam=params[RESONANCE_PARAM].getValue(); // 0 to 1
+    // resParam=0.3;
+    resonance = std::pow(resParam, 2) * 10.f;
+    // resonance=1;
+
+    float cutoff = dsp::FREQ_C4 * std::pow(2.f, cutoff_pitch);
+    float omega0 = 2 * M_PI * cutoff;
+    float dt=args.sampleTime;
+
+    // Fundamentals VCF integrates with RK4.
+    dsp::stepRK4(0.0f, args.sampleTime, state, 4, [&](float t, const float x[], float dxdt[]) {
+        float inputt = crossfade(this->last_osc, osc, t / dt);
+        float inputc = clip(inputt - resonance * x[3]);
+        float yc0 = clip(x[0]);
+        float yc1 = clip(x[1]);
+        float yc2 = clip(x[2]);
+        float yc3 = clip(x[3]);
+        
+        dxdt[0] = omega0 * (inputc - yc0);
+        dxdt[1] = omega0 * (yc0 - yc1);
+        dxdt[2] = omega0 * (yc1 - yc2);
+        dxdt[3] = omega0 * (yc2 - yc3);
+      });
+
+    last_osc=osc;
+    return state[3];
+  }
+  
+  void process(const ProcessArgs &args) override {
+    checkTriggers();
+    
+    updateMetro(args);
+    
+    // Compute the frequency from the pitch parameter and input
+    float out = processOscillator(args);
+    float env = processEnvelope(args);
+
+    out = processFilter(args,out);
     
     // Audio signals are typically +/-5V
     // https://vcvrack.com/manual/VoltageStandards
@@ -261,7 +329,9 @@ struct DuettoWidget : ModuleWidget {
 
     //addParam(createParam<LEDSlider>(mm2px(Vec(10.0, 60)), module, Duetto::TEMPO_PARAM));
     addParam(createParam<SlidePot>(mm2px(Vec(10.0, 50)), module, Duetto::TEMPO_PARAM));
-
+    addParam(createParam<SlidePot>(mm2px(Vec(55.0, 50)), module, Duetto::FILTERCUT_PARAM));
+    addParam(createParam<SlidePot>(mm2px(Vec(60.0, 50)), module, Duetto::RESONANCE_PARAM));
+    
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(88.257, 58.196)), module, Duetto::OUT1_OUTPUT));
 
     // Color changing? First just show the tempo
@@ -285,6 +355,5 @@ Model* modelDuetto = createModel<Duetto, DuettoWidget>("Duetto");
 
 
 // NEXT:
-//  Filter -- 
 //  Delay
 //  Dual Oscillator
