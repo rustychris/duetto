@@ -285,8 +285,6 @@ Model* modelDuetto = createModel<Duetto, DuettoWidget>("Duetto");
 
 
 // NEXT:
-//  Saw
-//    follow VCO.cpp
 //  Filter -- 
 //  Delay
 //  Dual Oscillator
