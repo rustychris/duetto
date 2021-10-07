@@ -1,5 +1,14 @@
 #include "plugin.hpp"
 
+// for the delay
+// note that atsamd51 has 192kB RAM
+// not very much!
+// assuming I want to keep using 32-bit floats, the whole of RAM 
+// still just gives me 1 second of delay
+// this is 2MB, which gives 47s
+#define HISTORY_SIZE (1<<21)
+
+
 #define NNOTES 10
 #define NSTEPS 8
 
@@ -38,6 +47,7 @@ struct Duetto : Module {
     TEMPO_PARAM,
     FILTERCUT_PARAM,
     RESONANCE_PARAM,
+    DELAY_PARAM,
     NUM_PARAMS
   };
   enum InputIds {
@@ -53,6 +63,9 @@ struct Duetto : Module {
   };
 
   dsp::MinBlepGenerator<16, 16, float> sawMinBlep;
+  // for delay. I'm not using samplerate or other fancy stuff, so
+  // regular ringbuffer is okay.
+  dsp::RingBuffer<float, HISTORY_SIZE> historyBuffer;
 
   // Minor pentatonic. and an Off note
   float noteValues[NNOTES+1]={-12/12.,-9/12.,-7/12., -5/12.,-2./12,
@@ -108,7 +121,10 @@ struct Duetto : Module {
     // Filter cut. 1V/oct
     configParam(FILTERCUT_PARAM, -1.f, 6.0f, 0.00f, "Filter cut","Hz",2.f,dsp::FREQ_C4);
     configParam(RESONANCE_PARAM, 0.f, 1.0f, 0.00f, "Resonance","%",0.f,100);
-    
+
+    // 10 to 1000ms
+    configParam(DELAY_PARAM, 0.f, 2.0f, 0.00f, "Delay","ms",10.f,10);
+
     for(int i=0;i<NSTEPS;i++) {
       setStepNote(i,NNOTES,0.5); // no note, inactive
     }
@@ -270,6 +286,7 @@ struct Duetto : Module {
     float dt=args.sampleTime;
 
     // Fundamentals VCF integrates with RK4.
+    // note that RK2 and Euler are available with identical interface
     dsp::stepRK4(0.0f, args.sampleTime, state, 4, [&](float t, const float x[], float dxdt[]) {
         float inputt = crossfade(this->last_osc, osc, t / dt);
         float inputc = clip(inputt - resonance * x[3]);
@@ -287,6 +304,32 @@ struct Duetto : Module {
     last_osc=osc;
     return state[3];
   }
+
+  float processDelay(const ProcessArgs &args, float in) {
+    float feedback=0.6;
+    float dryWet=0.5; 
+    unsigned int delayIndex=48000;
+    float wet;
+
+    float delay_s=0.01f*pow(10.f,params[DELAY_PARAM].getValue()); // 10 to 1000
+
+    delayIndex=(unsigned int)(delay_s*args.sampleRate);
+
+    while ( historyBuffer.size() > delayIndex ) historyBuffer.shift();
+    if ( historyBuffer.size()==delayIndex ) {
+      wet = historyBuffer.shift();
+    } else {
+      wet=0.0;
+    }
+
+    // Push dry+feedback sample into history buffer
+    if (!historyBuffer.full()) {
+      historyBuffer.push(in + feedback*wet);
+    }
+    
+    float out = in*(1-dryWet) + wet*dryWet;
+    return out;
+  }
   
   void process(const ProcessArgs &args) override {
     checkTriggers();
@@ -298,10 +341,14 @@ struct Duetto : Module {
     float env = processEnvelope(args);
 
     out = processFilter(args,out);
+
+    out *= env;
+
+    out = processDelay(args,out);
     
     // Audio signals are typically +/-5V
     // https://vcvrack.com/manual/VoltageStandards
-    outputs[OUT1_OUTPUT].setVoltage(5.f * env * out);
+    outputs[OUT1_OUTPUT].setVoltage(5.f * out);
   }
 };
 
@@ -329,8 +376,9 @@ struct DuettoWidget : ModuleWidget {
 
     //addParam(createParam<LEDSlider>(mm2px(Vec(10.0, 60)), module, Duetto::TEMPO_PARAM));
     addParam(createParam<SlidePot>(mm2px(Vec(10.0, 50)), module, Duetto::TEMPO_PARAM));
-    addParam(createParam<SlidePot>(mm2px(Vec(55.0, 50)), module, Duetto::FILTERCUT_PARAM));
-    addParam(createParam<SlidePot>(mm2px(Vec(60.0, 50)), module, Duetto::RESONANCE_PARAM));
+    addParam(createParam<SlidePot>(mm2px(Vec(58.0, 50)), module, Duetto::FILTERCUT_PARAM));
+    addParam(createParam<SlidePot>(mm2px(Vec(65.0, 50)), module, Duetto::RESONANCE_PARAM));
+    addParam(createParam<SlidePot>(mm2px(Vec(72.0, 50)), module, Duetto::DELAY_PARAM));
     
     addOutput(createOutputCentered<PJ301MPort>(mm2px(Vec(88.257, 58.196)), module, Duetto::OUT1_OUTPUT));
 
@@ -356,4 +404,12 @@ Model* modelDuetto = createModel<Duetto, DuettoWidget>("Duetto");
 
 // NEXT:
 //  Delay
+//    How does the Fundamentals Delay sound? Is it really different from chronoblob?
+//    It seems to muffle the sound? or does it.
+//    Try the VCV code, but drop the RC filters. For starters take a delay in ms, and
+//    come back to sync with tempo
+//    Fundamentals Delay:
+//      outBuffer? not quite sure why they have this 16 sample output buffer
+//    Super basic delay is not too bad.  Does seem like some feedback limitation is needed
+//      otherwise harsh tones emerg
 //  Dual Oscillator
